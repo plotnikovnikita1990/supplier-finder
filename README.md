@@ -187,7 +187,6 @@ GitHub: plotnikovnikita1990
 Email: plotnikovnikita1990@gmail.com
 
 🧠 Почему AI без GPT?
-Мы намеренно отказались от внешних LLM (ChatGPT и подобных) в MVP, потому что:
 
 Прозрачность – бизнес-логика полностью контролируется и объясняется.
 
