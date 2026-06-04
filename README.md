@@ -1,6 +1,6 @@
 # 🍽️ AI Supplier Finder — умный поиск поставщиков продуктов питания
 
-**Живая демонстрация:** [https://supplier-finder-plotnikovnikita1990.streamlit.app](https://supplier-finder-plotnikovnikita1990.streamlit.app)
+**Живая демонстрация:** [https://supplier-finder-uwdcsefzchdb3ue9ukappjh.streamlit.app/]
 
 > ⏱️ Первый запуск может занять 1–2 минуты, пока загружается AI-модель (один раз). Затем всё работает быстро.
 
