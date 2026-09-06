@@ -1,1 +1,1 @@
-
+"""Supplier finder application package."""
