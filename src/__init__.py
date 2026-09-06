@@ -1,1 +1,1 @@
-"""Supplier Finder source package."""
+"""AI Supplier Intelligence package."""
