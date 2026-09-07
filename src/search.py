@@ -1,4 +1,6 @@
 from functools import lru_cache
+import re
+
 import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -6,11 +8,37 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
+# Common Russian stop words that do not describe the requested product.
+STOP_WORDS = {
+    "для", "в", "во", "на", "и", "или", "с", "со", "из", "от", "по", "под", "при",
+    "как", "нужны", "нужен", "нужна", "ищу", "найти", "поставщик", "поставщики", "оптом",
+    "оптовые", "оптовый", "оптовая", "заказать", "заказ", "купить", "поставка", "поставки",
+    "цена", "цены", "стоимость", "кг", "кг.", "тонн", "тонна", "для ресторана", "ресторан",
+}
+
 
 @lru_cache(maxsize=1)
 def load_encoder():
     from sentence_transformers import SentenceTransformer
     return SentenceTransformer(MODEL_NAME)
+
+
+def _tokens(text: str) -> list[str]:
+    return [t for t in re.findall(r"[а-яa-zё0-9-]+", str(text).lower()) if t not in STOP_WORDS]
+
+
+def _token_matches(query_tokens: list[str], text: str) -> int:
+    doc_tokens = _tokens(text)
+    if not query_tokens or not doc_tokens:
+        return 0
+    matched = 0
+    for q in query_tokens:
+        if len(q) < 4:
+            continue
+        # Prefix matching handles basic Russian inflections: капуста/капусту/капустой.
+        if any((d.startswith(q[:5]) or q.startswith(d[:5])) for d in doc_tokens if len(d) >= 4):
+            matched += 1
+    return matched
 
 
 class SemanticSearch:
@@ -44,6 +72,24 @@ class SemanticSearch:
         return np.clip(cosine_similarity(self.embeddings, q).ravel(), 0, 1)
 
     @staticmethod
+    def _lexical_score(query: str, df: pd.DataFrame) -> np.ndarray:
+        query_tokens = _tokens(query)
+        scores = []
+        for _, row in df.iterrows():
+            # Product-relevant fields carry the strongest signal.
+            product_text = " ".join(
+                [
+                    str(row.get("name", "")),
+                    str(row.get("category", "")),
+                    str(row.get("product_description", "")),
+                    str(row.get("notes", "")),
+                ]
+            )
+            matched = _token_matches(query_tokens, product_text)
+            scores.append(matched / max(len([t for t in query_tokens if len(t) >= 4]), 1))
+        return np.array(scores, dtype=float)
+
+    @staticmethod
     def _commercial_score(df: pd.DataFrame) -> np.ndarray:
         min_order = df["min_order_kg"].fillna(df["min_order_kg"].median()).to_numpy(float)
         price = df["price_per_kg"].fillna(df["price_per_kg"].median()).to_numpy(float)
@@ -72,18 +118,16 @@ class SemanticSearch:
 
     @staticmethod
     def add_rating(df: pd.DataFrame) -> pd.DataFrame:
-        """Convert internal score into a simple user-facing 1–5 rating."""
         result = df.copy()
         result["rating"] = (1 + 4 * result["final_score"].clip(0, 1)).round(1)
         return result
 
     def rank_filtered(self, df: pd.DataFrame, city: str | None = None) -> pd.DataFrame:
-        """Rank suppliers when the user uses filters without a text query."""
         work = df.reset_index(drop=True).copy()
         if work.empty:
             return work
-
         work["semantic_score"] = 0.5
+        work["lexical_score"] = 0.0
         work["commercial_score"] = self._commercial_score(work)
         work["operational_score"] = self._operational_score(work, city)
         work["completeness_score"] = self._completeness_score(work)
@@ -107,19 +151,29 @@ class SemanticSearch:
         if work.empty:
             return work
 
-        sims = self._semantic_similarity(query)
-        sim_by_id = dict(zip(self.df["supplier_id"], sims))
-        work["semantic_score"] = work["supplier_id"].map(sim_by_id).fillna(0.0)
+        semantic = self._semantic_similarity(query)
+        semantic_by_id = dict(zip(self.df["supplier_id"], semantic))
+        work["semantic_score"] = work["supplier_id"].map(semantic_by_id).fillna(0.0)
+        work["lexical_score"] = self._lexical_score(query, work)
+
+        # Critical relevance gate: when at least one supplier explicitly contains
+        # the requested product term, unrelated suppliers are removed from the pool.
+        explicit_matches = work["lexical_score"] > 0
+        if explicit_matches.any():
+            work = work.loc[explicit_matches].copy()
+
         work["commercial_score"] = self._commercial_score(work)
         work["operational_score"] = self._operational_score(work, city)
         work["completeness_score"] = self._completeness_score(work)
 
-        # Internal decision model. The weights are deliberately hidden from UI.
+        # Product match dominates semantic similarity; semantics resolves ordering
+        # between suppliers that really offer the requested product.
         work["final_score"] = (
-            0.60 * work["semantic_score"]
-            + 0.20 * work["commercial_score"]
-            + 0.12 * work["operational_score"]
-            + 0.08 * work["completeness_score"]
+            0.55 * work["lexical_score"]
+            + 0.25 * work["semantic_score"]
+            + 0.10 * work["commercial_score"]
+            + 0.07 * work["operational_score"]
+            + 0.03 * work["completeness_score"]
         )
         work = self.add_rating(work)
         return work.sort_values(["final_score", "orders_count"], ascending=[False, False]).head(top_k)
