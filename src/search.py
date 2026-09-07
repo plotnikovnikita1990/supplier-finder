@@ -53,7 +53,7 @@ class SemanticSearch:
 
     @staticmethod
     def _operational_score(df: pd.DataFrame, city: str | None) -> np.ndarray:
-        score = np.full(len(df), 0.5)
+        score = np.full(len(df), 0.5, dtype=float)
         delivery = df["delivery"].fillna("").str.lower()
         score += delivery.str.contains("1-2 дня|ежедневно", regex=True).to_numpy() * 0.25
         if city:
@@ -65,17 +65,49 @@ class SemanticSearch:
     @staticmethod
     def _completeness_score(df: pd.DataFrame) -> np.ndarray:
         cols = ["certifications", "delivery", "coverage_region", "phone", "email", "website"]
-        present = np.column_stack([df[c].fillna("").str.strip().ne("").to_numpy() for c in cols])
+        present = np.column_stack(
+            [df[c].fillna("").str.strip().ne("").to_numpy() for c in cols]
+        )
         return present.mean(axis=1)
 
-    def search(self, query: str, df: pd.DataFrame | None = None, city: str | None = None,
-               top_k: int = 8) -> pd.DataFrame:
+    @staticmethod
+    def add_rating(df: pd.DataFrame) -> pd.DataFrame:
+        """Convert internal score into a simple user-facing 1–5 rating."""
+        result = df.copy()
+        result["rating"] = (1 + 4 * result["final_score"].clip(0, 1)).round(1)
+        return result
+
+    def rank_filtered(self, df: pd.DataFrame, city: str | None = None) -> pd.DataFrame:
+        """Rank suppliers when the user uses filters without a text query."""
+        work = df.reset_index(drop=True).copy()
+        if work.empty:
+            return work
+
+        work["semantic_score"] = 0.5
+        work["commercial_score"] = self._commercial_score(work)
+        work["operational_score"] = self._operational_score(work, city)
+        work["completeness_score"] = self._completeness_score(work)
+        work["final_score"] = (
+            0.55 * work["commercial_score"]
+            + 0.27 * work["operational_score"]
+            + 0.18 * work["completeness_score"]
+        )
+        return self.add_rating(work).sort_values(
+            ["final_score", "orders_count"], ascending=[False, False]
+        )
+
+    def search(
+        self,
+        query: str,
+        df: pd.DataFrame | None = None,
+        city: str | None = None,
+        top_k: int = 8,
+    ) -> pd.DataFrame:
         work = (self.df if df is None else df).reset_index(drop=True).copy()
         if work.empty:
             return work
 
         sims = self._semantic_similarity(query)
-        # Maps the selected subset back to the master frame by supplier_id.
         sim_by_id = dict(zip(self.df["supplier_id"], sims))
         work["semantic_score"] = work["supplier_id"].map(sim_by_id).fillna(0.0)
         work["commercial_score"] = self._commercial_score(work)
@@ -89,7 +121,8 @@ class SemanticSearch:
             + 0.12 * work["operational_score"]
             + 0.08 * work["completeness_score"]
         )
-        return work.sort_values(["final_score", "semantic_score"], ascending=False).head(top_k)
+        work = self.add_rating(work)
+        return work.sort_values(["final_score", "orders_count"], ascending=[False, False]).head(top_k)
 
 
 def compare_suppliers(rows: pd.DataFrame) -> tuple[str, str]:
