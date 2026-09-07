@@ -1,91 +1,96 @@
 import streamlit as st
 import pandas as pd
-from src.data import load_data
-from src.search import search_suppliers, compare_suppliers
-from src.insights import generate_supplier_insights
+from pathlib import Path
+import sys
+
+# Добавляем текущую папку в путь поиска модулей
+sys.path.insert(0, str(Path(__file__).parent))
+
+# Пытаемся импортировать с подробной диагностикой
+try:
+    from src.data import load_data
+    print("✅ data.py загружен")
+except ImportError as e:
+    st.error(f"❌ Ошибка импорта data.py: {e}")
+    st.write("Проверьте, что файл src/data.py существует и в папке src есть __init__.py")
+    st.stop()
+
+try:
+    from src.search import search_suppliers, compare_suppliers
+    print("✅ search.py загружен")
+except ImportError as e:
+    st.error(f"❌ Ошибка импорта search.py: {e}")
+    st.stop()
+
+try:
+    from src.insights import generate_supplier_insights
+    print("✅ insights.py загружен")
+except ImportError as e:
+    st.warning(f"⚠️ Модуль insights не загружен: {e}")
+    # Создаем заглушку
+    def generate_supplier_insights(supplier, query="", rank=1):
+        return {
+            'strengths': [],
+            'recommendation_reason': "Модуль анализа не загружен. Проверьте файл src/insights.py",
+            'questions_to_ask': ["Уточните детали сотрудничества"],
+            'risks': ["Нет данных для анализа"],
+            'best_use_case': "Требуется ручной анализ"
+        }
 
 
 def display_supplier_card(supplier, rank, query=""):
-    """Отображение карточки поставщика с аналитикой"""
-    
+    """Отображение карточки поставщика"""
     with st.container():
-        # Заголовок
         if rank <= 3:
-            st.markdown(f"### 🏆 {rank}. {supplier.get('name', 'Без названия')} (Рекомендуемый)")
+            st.markdown(f"### 🏆 {rank}. {supplier.get('name', 'Без названия')}")
         else:
             st.markdown(f"### {rank}. {supplier.get('name', 'Без названия')}")
         
-        # Основная информация
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown(f"**🏷️ Категория:** {supplier.get('category', '-')}")
-            st.markdown(f"**📍 Город:** {supplier.get('city', '-')}")
-            if supplier.get('region'):
-                st.markdown(f"**🌍 Регион:** {supplier['region']}")
+            st.markdown(f"**Категория:** {supplier.get('category', '-')}")
+            st.markdown(f"**Город:** {supplier.get('city', '-')}")
+            st.markdown(f"**Цена:** {supplier.get('price_range', 'не указано')}")
         with col2:
-            st.markdown(f"**💰 Цена:** {supplier.get('price_range', 'не указано')}")
-            st.markdown(f"**📦 Мин. заказ:** {supplier.get('min_order', 'не указано')}")
-            st.markdown(f"**🚚 Доставка:** {supplier.get('delivery_conditions', 'не указано')}")
+            st.markdown(f"**Мин. заказ:** {supplier.get('min_order', 'не указано')}")
+            st.markdown(f"**Доставка:** {supplier.get('delivery_conditions', 'не указано')}")
+            st.markdown(f"**Контакты:** {supplier.get('contacts', 'не указано')}")
         
-        # Контакты
-        st.markdown(f"**📞 Контакты:** {supplier.get('contacts', 'не указано')}")
-        if supplier.get('website'):
-            st.markdown(f"**🌐 Сайт:** {supplier['website']}")
-        
-        # Документы
-        if supplier.get('documents') and supplier['documents'] != 'не указано':
-            docs = [d.strip() for d in supplier['documents'].split(';') if d.strip()]
-            st.markdown(f"**📋 Документы:** {', '.join(docs)}")
-        
-        # Рейтинг
         if 'total_score' in supplier:
-            st.markdown(f"**⭐ Рейтинг:** {supplier['total_score']:.2f}")
+            st.markdown(f"**Рейтинг:** {supplier['total_score']:.2f}")
         
-        # Анализ поставщика (НОВОЕ!)
+        # Анализ
         with st.expander("🧠 Анализ поставщика", expanded=(rank <= 3)):
             try:
                 insights = generate_supplier_insights(supplier, query, rank)
                 
-                # Лучший сценарий
-                st.info(f"💡 **Идеально подходит для:** {insights.get('best_use_case', 'Уточните')}")
-                
-                # Сильные стороны
                 if insights.get('strengths'):
-                    st.markdown("**📊 Сильные стороны:**")
+                    st.markdown("**Сильные стороны:**")
                     for label, value, icon, _ in insights['strengths'][:4]:
-                        st.write(f"{icon} **{label}:** {value}")
+                        st.write(f"{icon} {label}: {value}")
                 
-                # Рекомендация
-                st.markdown("**💡 Почему стоит связаться:**")
-                st.info(insights.get('recommendation_reason', 'Информация недоступна'))
+                st.info(f"💡 {insights.get('recommendation_reason', 'Нет рекомендаций')}")
                 
-                # Вопросы
                 if insights.get('questions_to_ask'):
-                    st.markdown("**📋 Что уточнить при звонке:**")
-                    for i, question in enumerate(insights['questions_to_ask'][:3], 1):
-                        st.write(f"{i}. {question}")
+                    st.markdown("**Вопросы для звонка:**")
+                    for q in insights['questions_to_ask'][:3]:
+                        st.write(f"• {q}")
                 
-                # Риски
                 if insights.get('risks'):
-                    st.markdown("**⚠️ На что обратить внимание:**")
+                    st.markdown("**⚠️ Риски:**")
                     for risk in insights['risks'][:3]:
                         st.warning(risk)
                         
             except Exception as e:
-                st.error(f"Ошибка при генерации анализа: {e}")
+                st.error(f"Ошибка анализа: {e}")
         
         st.divider()
 
 
 def main():
-    st.set_page_config(
-        page_title="Food Supplier Finder",
-        page_icon="🍽️",
-        layout="wide"
-    )
-    
+    st.set_page_config(page_title="Food Supplier Finder", layout="wide")
     st.title("🍽️ Поиск поставщиков продуктов питания")
-    st.caption("Найдите лучших поставщиков с интеллектуальным анализом и рекомендациями")
+    st.caption("Найдите лучших поставщиков с интеллектуальным анализом")
     
     # Загрузка данных
     with st.spinner("Загрузка данных..."):
@@ -96,84 +101,46 @@ def main():
             st.error(f"❌ Ошибка загрузки данных: {e}")
             return
     
-    # Поисковая форма
+    # Поиск
     with st.form(key='search_form'):
-        query = st.text_input(
-            "🔍 Что ищете?", 
-            placeholder="Например: куриное филе, молоко, упаковка...",
-            value=st.session_state.get('last_query', '')
-        )
-        
+        query = st.text_input("🔍 Что ищете?", placeholder="Например: куриное филе, молоко...")
         col1, col2 = st.columns(2)
         with col1:
             categories = ["Все"] + sorted(df['category'].unique().tolist())
-            category_filter = st.selectbox("🏷️ Категория", categories)
+            category_filter = st.selectbox("Категория", categories)
         with col2:
             cities = ["Все"] + sorted(df['city'].unique().tolist())
-            city_filter = st.selectbox("📍 Город", cities)
-        
+            city_filter = st.selectbox("Город", cities)
         submitted = st.form_submit_button("🔍 Найти", type="primary")
     
-    # Обработка поиска
     if submitted and query:
-        st.session_state['last_query'] = query
-        
-        with st.spinner("🔍 Ищем поставщиков..."):
+        with st.spinner("Ищем..."):
             try:
                 results = search_suppliers(query, df, category_filter, city_filter)
             except Exception as e:
-                st.error(f"❌ Ошибка поиска: {e}")
+                st.error(f"Ошибка поиска: {e}")
                 return
         
         if not results:
-            st.warning("❌ Поставщики не найдены. Попробуйте изменить запрос.")
+            st.warning("Поставщики не найдены.")
             return
         
-        st.success(f"✅ Найдено **{len(results)}** поставщиков")
+        st.success(f"Найдено {len(results)} поставщиков")
         
-        # Рекомендуемый поставщик
+        # Лучший вариант
         if results:
             best = results[0]
-            with st.container():
-                st.markdown("---")
-                st.markdown("## 🏆 Лучший вариант для звонка")
-                
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.markdown(f"### {best.get('name', 'Без названия')}")
-                    st.markdown(f"**Рейтинг:** {best.get('total_score', 0):.2f}")
-                    st.markdown(f"**Категория:** {best.get('category', '-')} | **Город:** {best.get('city', '-')}")
-                    
-                    try:
-                        insights = generate_supplier_insights(best, query, 1)
-                        st.info(f"💡 {insights.get('recommendation_reason', 'Информация недоступна')}")
-                    except:
-                        st.info("💡 Рекомендуемый поставщик — свяжитесь для уточнения деталей")
-                    
-                with col2:
-                    if st.button("📞 Связаться", type="primary"):
-                        st.success(f"Контакт: {best.get('contacts', 'контакты не указаны')}")
-            
+            st.markdown("---")
+            st.markdown(f"## 🏆 Лучший вариант: {best.get('name', 'Без названия')}")
+            st.markdown(f"**Рейтинг:** {best.get('total_score', 0):.2f}")
+            if st.button("📞 Связаться с этим поставщиком", type="primary"):
+                st.success(f"Контакт: {best.get('contacts', 'не указаны')}")
             st.markdown("---")
         
-        # Список поставщиков
+        # Список
         st.subheader("📋 Все поставщики")
-        
-        selected_for_comparison = []
-        
         for idx, supplier in enumerate(results[:10], 1):
             display_supplier_card(supplier, idx, query)
-            
-            if st.checkbox(f"➕ Сравнить", key=f"compare_{idx}"):
-                selected_for_comparison.append(supplier)
-        
-        # Сравнение
-        if selected_for_comparison:
-            st.markdown("---")
-            st.subheader("📊 Сравнение выбранных поставщиков")
-            
-            comparison = compare_suppliers(selected_for_comparison)
-            st.dataframe(comparison, use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":
