@@ -1,16 +1,13 @@
 from pathlib import Path
+
 import pandas as pd
 import streamlit as st
-import json
 
 from src.data import load_suppliers
 from src.search import SemanticSearch, compare_suppliers
 
-# -----------------------------------------------------------------------------
-# 1. Конфигурация страницы и стили
-# -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Food Supplier Finder | Goulash.tech",
+    page_title="Food Supplier Finder",
     page_icon="🥕",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -36,43 +33,17 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# -----------------------------------------------------------------------------
-# 2. Кэширование данных и движка
-# -----------------------------------------------------------------------------
+
 @st.cache_data
 def get_data() -> pd.DataFrame:
     return load_suppliers(DATA_PATH)
+
 
 @st.cache_resource
 def get_search_engine(df: pd.DataFrame) -> SemanticSearch:
     return SemanticSearch(df)
 
-# -----------------------------------------------------------------------------
-# 3. ОПТИМИЗАЦИЯ: Кэширование логики сравнения
-# -----------------------------------------------------------------------------
-@st.cache_data(ttl=3600)
-def get_cached_comparison(selected_ids: tuple, query: str, city: str | None, full_df: pd.DataFrame):
-    """
-    Кэширует результат ранжирования и генерации вердикта.
-    Использование tuple(selected_ids) гарантирует стабильный хэш для кэша, 
-    независимо от порядка выбора чекбоксов.
-    """
-    selected = full_df[full_df["supplier_id"].isin(selected_ids)].copy()
-    engine = get_search_engine(full_df)
-    
-    if query.strip():
-        ranked = engine.search(query.strip(), df=selected, city=city, top_k=len(selected))
-    else:
-        ranked = engine.rank_filtered(selected, city=city)
 
-    ranked = ranked.sort_values("final_score", ascending=False).reset_index(drop=True)
-    verdict, details = compare_suppliers(ranked)
-    
-    return verdict, details, ranked
-
-# -----------------------------------------------------------------------------
-# 4. Инициализация
-# -----------------------------------------------------------------------------
 try:
     df = get_data()
     engine = get_search_engine(df)
@@ -85,9 +56,6 @@ if "selected_ids" not in st.session_state:
 if "compare_mode" not in st.session_state:
     st.session_state.compare_mode = False
 
-# -----------------------------------------------------------------------------
-# 5. Заголовок и Сайдбар
-# -----------------------------------------------------------------------------
 st.title("🥕 Food Supplier Finder")
 st.markdown(
     '<div class="app-subtitle">Поиск и сравнение поставщиков для менеджера по закупкам</div>',
@@ -126,7 +94,7 @@ with st.sidebar:
         "4. При необходимости можно сравнить поставщиков."
     )
     st.caption(
-        f"Демонстрационный датасет · {len(df)} поставщиков · режим: {engine.mode}"
+        f"Демонстрационный датасет · {len(df)} поставщиков · режим поиска: {engine.mode}"
     )
 
 query = st.text_input(
@@ -134,40 +102,41 @@ query = st.text_input(
     placeholder="Например: органические томаты оптом для ресторана",
 )
 
-# Фильтрация датафрейма
 filtered = df.copy()
 if category != "Все категории":
     filtered = filtered[filtered["category"] == category]
 if city != "Все города":
     filtered = filtered[filtered["city"] == city]
 
-# -----------------------------------------------------------------------------
-# 6. Режим сравнения (Head-to-Head)
-# -----------------------------------------------------------------------------
+
+# ---------- Head-to-Head comparison ----------
 if st.session_state.compare_mode:
     st.subheader("Сравнение поставщиков")
-    
-    # Сортируем кортеж, чтобы порядок выбора не ломал кэш
-    selected_ids_tuple = tuple(sorted(st.session_state.selected_ids))
+    selected = df[df["supplier_id"].isin(st.session_state.selected_ids)].copy()
 
-    if len(selected_ids_tuple) < 2:
+    if len(selected) < 2:
         st.info("Выберите минимум двух поставщиков для сравнения.")
     else:
-        # SPINNER: Управляет ожиданиями пользователя при первом (тяжелом) расчете
-        with st.spinner("🤖 ИИ анализирует условия и формирует сравнение..."):
-            current_city = city if city != "Все города" else None
-            verdict, details, compare_order = get_cached_comparison(
-                selected_ids_tuple, 
-                query, 
-                current_city, 
-                df
+        if query.strip():
+            ranked_selected = engine.search(
+                query.strip(),
+                df=selected,
+                city=city if city != "Все города" else None,
+                top_k=len(selected),
             )
-        
-        # Отображение результатов (мгновенно при повторном рендере благодаря кэшу)
-        st.success(f"🏆 {verdict}")
-        st.info(details)
-        st.divider()
+        else:
+            ranked_selected = engine.rank_filtered(
+                selected,
+                city=city if city != "Все города" else None,
+            )
 
+        verdict, details = compare_suppliers(ranked_selected)
+        st.success(verdict)
+        st.write(details)
+
+        compare_order = ranked_selected.sort_values(
+            "final_score", ascending=False
+        ).reset_index(drop=True)
         columns = st.columns(min(len(compare_order), 4))
 
         for idx, (_, row) in enumerate(compare_order.head(4).iterrows()):
@@ -175,12 +144,14 @@ if st.session_state.compare_mode:
                 is_best = idx == 0
                 with st.container(border=True):
                     if is_best:
-                        st.markdown('<span class="best-badge">★ Лучший вариант</span>', unsafe_allow_html=True)
+                        st.markdown(
+                            '<span class="best-badge">★ Лучший вариант</span>',
+                            unsafe_allow_html=True,
+                        )
 
                     st.markdown(f"### {row['name']}")
                     st.caption(f"{row['category']} · {row['city']}")
                     st.markdown(f"**Рейтинг:** {row['rating']:.1f}/5")
-                    
                     st.markdown(
                         f"<div class='metric-label'>Заказов выполнено</div>"
                         f"<div class='metric-value'>{int(row['orders_count'])}</div>"
@@ -193,7 +164,10 @@ if st.session_state.compare_mode:
 
                     has_certs = str(row["certifications"]).strip() not in {"", "nan"}
                     delivery_text = str(row["delivery"]).lower()
-                    fast_delivery = any(token in delivery_text for token in ("1-2 дня", "1–2 дня", "ежедневно", "24 часа"))
+                    fast_delivery = any(
+                        token in delivery_text
+                        for token in ("1-2 дня", "1–2 дня", "ежедневно", "24 часа")
+                    )
                     high_moq = float(row["min_order_kg"]) >= 500
 
                     st.write("✅ Есть сертификаты" if has_certs else "❌ Сертификаты не указаны")
@@ -208,49 +182,25 @@ if st.session_state.compare_mode:
                     )
 
                     if str(row["website"]).strip():
-                        st.link_button("Открыть сайт", row["website"], use_container_width=True)
+                        st.link_button(
+                            "Открыть сайт",
+                            row["website"],
+                            use_container_width=True,
+                        )
 
                     with st.expander("Подробнее"):
                         st.write(row["product_description"])
                         st.write(f"**Комментарий:** {row['notes']}")
                         st.write(f"**Источник:** {row['source']}")
 
-        # ДЕМО ИНТЕГРАЦИИ: Показывает понимание API-взаимодействия
-        st.divider()
-        st.subheader("📤 Действия")
-        col_act1, col_act2 = st.columns([1, 2])
-        with col_act1:
-            if st.button("← Вернуться к поиску", use_container_width=True):
-                st.session_state.compare_mode = False
-                st.session_state.selected_ids = []
-                st.rerun()
-        
-        with col_act2:
-            if st.button("✅ Отправить победителя в CRM-систему", use_container_width=True, type="primary"):
-                winner = compare_order.iloc[0].to_dict()
-                # Преобразуем типы для корректного JSON
-                winner["orders_count"] = int(winner["orders_count"])
-                winner["min_order_kg"] = float(winner["min_order_kg"])
-                winner["price_per_kg"] = float(winner["price_per_kg"])
-                
-                payload = {
-                    "action": "create_supplier_lead",
-                    "supplier_id": winner["supplier_id"],
-                    "name": winner["name"],
-                    "ai_verdict": verdict,
-                    "requested_by": "AI_Automation_Specialist",
-                    "priority": "high" if winner["rating"] >= 4.5 else "normal"
-                }
-                
-                st.success(f"✅ Данные поставщика '{winner['name']}' успешно отправлены в CRM!")
-                with st.expander("📋 Просмотреть JSON-пейлоад запроса к API"):
-                    st.json(payload)
+        if st.button("← Вернуться к поиску", use_container_width=True):
+            st.session_state.compare_mode = False
+            st.rerun()
 
     st.stop()
 
-# -----------------------------------------------------------------------------
-# 7. Результаты поиска
-# -----------------------------------------------------------------------------
+
+# ---------- Search results ----------
 if query.strip():
     results = engine.search(
         query.strip(),
@@ -276,7 +226,9 @@ if results.empty:
     st.warning("По текущим фильтрам поставщики не найдены.")
     st.stop()
 
-best_supplier_id = results.sort_values("final_score", ascending=False).iloc[0]["supplier_id"]
+best_supplier_id = (
+    results.sort_values("final_score", ascending=False).iloc[0]["supplier_id"]
+)
 
 sort_map = {
     "Рейтинг: сначала лучшие": ("rating", False),
@@ -294,16 +246,20 @@ results = results.sort_values(sort_column, ascending=ascending).reset_index(drop
 left, right = st.columns([4, 1])
 with left:
     st.subheader(f"Подходящие поставщики · {len(results)}")
-    st.caption(f"Показаны результаты {mode_label}. Лучший вариант определяется автоматически.")
+    st.caption(
+        f"Показаны результаты {mode_label}. Лучший вариант определяется автоматически."
+    )
 with right:
     if len(st.session_state.selected_ids) >= 2:
-        if st.button(f"Сравнить ({len(st.session_state.selected_ids)})", use_container_width=True):
+        if st.button(
+            f"Сравнить ({len(st.session_state.selected_ids)})",
+            use_container_width=True,
+        ):
             st.session_state.compare_mode = True
             st.rerun()
 
-# -----------------------------------------------------------------------------
-# 8. Карточки поставщиков
-# -----------------------------------------------------------------------------
+
+# ---------- Supplier cards ----------
 for _, row in results.iterrows():
     is_best = row["supplier_id"] == best_supplier_id
 
@@ -312,7 +268,10 @@ for _, row in results.iterrows():
 
         with c1:
             if is_best:
-                st.markdown('<span class="best-badge">★ Лучший вариант</span>', unsafe_allow_html=True)
+                st.markdown(
+                    '<span class="best-badge">★ Лучший вариант</span>',
+                    unsafe_allow_html=True,
+                )
 
             st.markdown(f"### {row['name']}")
             st.caption(f"{row['category']} · {row['city']} · {row['region']}")
@@ -330,27 +289,30 @@ for _, row in results.iterrows():
 
             certs = str(row["certifications"]).strip()
             delivery = str(row["delivery"]).strip()
-            
             st.markdown(
-                (f'<span class="hint-badge">✅ {certs.split(";")[0].strip()}</span>' if certs else '<span class="hint-badge">❌ Сертификаты не указаны</span>'),
+                (
+                    f'<span class="hint-badge">✅ {certs.split(";")[0].strip()}</span>'
+                    if certs
+                    else '<span class="hint-badge">❌ Сертификаты не указаны</span>'
+                ),
                 unsafe_allow_html=True,
             )
             if delivery:
-                st.markdown(f'<span class="hint-badge">🚚 {delivery.split(";")[0].strip()}</span>', unsafe_allow_html=True)
+                st.markdown(
+                    f'<span class="hint-badge">🚚 {delivery.split(";")[0].strip()}</span>',
+                    unsafe_allow_html=True,
+                )
 
         with c2:
-            # Упрощенная и надежная логика чекбокса
-            is_selected = row["supplier_id"] in st.session_state.selected_ids
-            new_state = st.checkbox(
+            checked = row["supplier_id"] in st.session_state.selected_ids
+            selected = st.checkbox(
                 "Сравнить",
-                value=is_selected,
+                value=checked,
                 key=f"select_{row['supplier_id']}",
             )
-            
-            # Обновляем session_state только при изменении
-            if new_state and not is_selected:
+            if selected and row["supplier_id"] not in st.session_state.selected_ids:
                 st.session_state.selected_ids.append(row["supplier_id"])
-            elif not new_state and is_selected:
+            elif not selected and row["supplier_id"] in st.session_state.selected_ids:
                 st.session_state.selected_ids.remove(row["supplier_id"])
 
         st.markdown("---")
@@ -367,4 +329,7 @@ for _, row in results.iterrows():
         with st.expander("Подробнее"):
             st.write(f"**Комментарий:** {row['notes']}")
             st.write(f"**Источник:** {row['source']}")
-            st.caption("Внутренний ranking скрыт от пользователя: система сама определяет наиболее подходящий вариант.")
+            st.caption(
+                "Внутренний ranking скрыт от пользователя: система сама определяет "
+                "наиболее подходящий вариант."
+            )
